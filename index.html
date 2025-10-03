@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Flappy Mouse - Versão com Power-ups</title>
+  <style>
+    :root{
+      --bg:#66d2e8;
+      --shadow:rgba(0,0,0,0.3);
+      --text:#033;
+    }
+    html,body{
+      height:100%;
+      margin:0;
+      background:var(--bg);
+      font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow:hidden;
+      user-select:none;
+    }
+    .wrap{
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      height:100%;
+      padding:20px;
+    }
+    canvas{
+      image-rendering:pixelated;
+      border:6px solid #0b5c3a;
+      border-radius:8px;
+      background:linear-gradient(#66d2e8 60%, #bcebf1 100%);
+      box-shadow:0 10px 25px var(--shadow);
+      display:block;
+    }
+    .ui{
+      position:fixed;
+      left:20px;
+      top:20px;
+      color:var(--text);
+      font-weight:700;
+      text-shadow:0 1px 0 rgba(255,255,255,.6);
+      font-size:1.2em;
+      z-index:10;
+    }
+    .controls{
+      position:fixed;
+      right:20px;
+      top:20px;
+      color:var(--text);
+      z-index:10;
+    }
+    button{
+      background:#fff;
+      border:1px solid #ccc;
+      padding:8px 14px;
+      border-radius:6px;
+      cursor:pointer;
+      font-weight:bold;
+      transition:all .2s;
+      box-shadow:0 2px 5px rgba(0,0,0,0.1);
+    }
+    button:hover{ transform:translateY(-2px); box-shadow:0 4px 8px rgba(0,0,0,0.15); }
+    .screen{
+      position:absolute;
+      top:0; left:0;
+      width:100%; height:100%;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      background:rgba(0,0,0,0.7);
+      color:white;
+      z-index:20;
+      text-align:center;
+      opacity:0;
+      pointer-events:none;
+      transition:opacity .35s;
+    }
+    .screen.active{ opacity:1; pointer-events:all; }
+    .screen h1{ font-size:2.5em; margin-bottom:20px; text-shadow:0 2px 5px rgba(0,0,0,0.5); }
+    .screen p{ font-size:1.1em; margin-bottom:18px; max-width:80%; }
+    @media (max-width:600px){
+      canvas{ width:360px; height:640px; }
+      .ui, .controls{ font-size:.9em; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="480" height="640"></canvas>
+    <div class="ui">
+      Score: <span id="score">0</span><br>
+      High Score: <span id="high-score">0</span>
+    </div>
+
+    <div id="start-screen" class="screen active">
+      <h1>Flappy Mouse</h1>
+      <p>Clique, toque ou pressione ESPAÇO para pular</p>
+      <p>Seja o campeão</p>
+      <button id="start-btn">Jogar</button>
+    </div>
+
+    <div id="game-over" class="screen">
+      <h1>Game Over</h1>
+      <p>Sua pontuação: <span id="final-score">0</span></p>
+      <p>Recorde: <span id="final-high-score">0</span></p>
+      <button id="restart-btn">Jogar Novamente</button>
+    </div>
+
+    <div id="particles" class="particles" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;"></div>
+
+  </div>
+  <script>
+    // Flappy Mouse - Versão com Power-ups
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const startScreen = document.getElementById('start-screen');
+    const gameOverScreen = document.getElementById('game-over');
+    const startBtnScreen = document.getElementById('start-btn');
+    const restartBtn = document.getElementById('restart-btn');
+    const scoreEl = document.getElementById('score');
+    const highScoreEl = document.getElementById('high-score');
+    const finalScoreEl = document.getElementById('final-score');
+    const finalHighScoreEl = document.getElementById('final-high-score');
+
+    // Configurações
+    const PIX = 2;
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // Estado
+    let frames = 0;
+    let running = false;
+    let gameStarted = false;
+    let gameOverTriggered = false;
+    let gravity = 0.45;
+    let jumpForce = -8.6;
+    let obstacles = [];
+    let powerUps = [];
+    let particles = [];
+    let spawnRate = 90;
+    let speed = 2.8;
+    let score = 0;
+    let highScore = Number(localStorage.getItem('flappyMouseHighScore') || 0);
+    let shakeTime = 0;
+    let slowMotion = 0;
+    let lastObstacleType = 0;
+    let parallaxLayers = [];
+    let activePowerUps = {};
+
+    // Audio
+    let audioContext = null;
+    const sounds = {};
+
+    function initAudio() {
+      try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // criar funções que tocam beep (não disparam até serem chamadas)
+        sounds.jump = createBeep(523.25, 0.08);
+        sounds.score = createBeep(659.25, 0.12);
+        sounds.hit = createBeep(220, 0.2);
+        sounds.gameOver = createBeep(174.61, 0.35);
+        sounds.collect = createBeep(784, 0.1);
+      } catch (e) {
+        console.log('Áudio não suportado:', e);
+        audioContext = null;
+      }
+    }
+
+    function createBeep(frequency, duration) {
+      return function() {
+        if (!audioContext) return;
+        try {
+          // criar e conectar
+          const oscillator = audioContext.createOscillator();
+          const gainNode = audioContext.createGain();
+          oscillator.connect(gainNode);
+          gainNode.connect(audioContext.destination);
+          oscillator.frequency.value = frequency;
+          oscillator.type = 'sine';
+          gainNode.gain.setValueAtTime(0.28, audioContext.currentTime);
+          // corrigido: exponentialRampToValueAtTime
+          gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
+          oscillator.start(audioContext.currentTime);
+          oscillator.stop(audioContext.currentTime + duration + 0.02);
+        } catch (e) {
+          // degrade gracefully
+          console.warn('Erro ao tocar som:', e);
+        }
+      };
+    }
+
+    // Sprite do mouse
+    const mouseSprite = [
+      [0,0,0,1,1,1,0,0,0],
+      [0,0,1,1,1,1,1,0,0],
+      [0,1,1,2,1,1,1,1,0],
+      [0,1,3,1,1,1,1,1,0],
+      [0,1,1,1,4,5,1,1,0],
+      [0,0,1,1,1,1,1,0,0],
+      [0,0,0,1,1,1,0,0,0],
+      [0,0,0,0,1,0,0,0,0]
+    ];
+    const mousePalette = {
+      1: '#9aa0a4',
+      2: '#6f7578',
+      3: '#f2b1b1',
+      4: '#ffffff',
+      5: '#000000'
+    };
+
+    function drawPixelSprite(grid, x, y, palette, scale = PIX) {
+      for (let j = 0; j < grid.length; j++) {
+        for (let i = 0; i < grid[j].length; i++) {
+          const v = grid[j][i];
+          if (!v) continue;
+          ctx.fillStyle = palette[v] || '#000';
+          ctx.fillRect(Math.round(x + i * scale), Math.round(y + j * scale), scale, scale);
+        }
+      }
+    }
+
+    // Mouse object
+    const mouse = {
+      x: 140,
+      y: H / 2 - 40,
+      vy: 0,
+      vx: 0,
+      w: 9 * PIX,
+      h: 8 * PIX,
+      rotation: 0,
+      wingRotation: 0,
+      wingDirection: 1,
+      trail: [],
+      update() {
+        if (!running) return;
+        this.vy += gravity;
+        this.vy *= 0.99;
+        this.vx *= 0.95;
+        this.y += this.vy;
+        this.x += this.vx;
+        this.rotation = Math.max(-0.8, Math.min(0.8, this.vy / 10));
+        this.wingRotation += 0.2 * this.wingDirection;
+        if (this.wingRotation > 0.5 || this.wingRotation < -0.5) this.wingDirection *= -1;
+        this.trail.push({ x: this.x + this.w / 2, y: this.y + this.h / 2 });
+        if (this.trail.length > 6) this.trail.shift();
+
+        const groundY = H - 48;
+        if (this.y + this.h > groundY) {
+          this.y = groundY - this.h;
+          this.vy = 0;
+          createParticles(this.x + this.w / 2, this.y + this.h, 10, '#2f9b49');
+          if (running && !gameOverTriggered) {
+            // delay pequeno para garantir efeitos visuais
+            setTimeout(() => gameOver(), 10);
+          }
+        }
+        if (this.y < 0) { this.y = 0; this.vy = 0; }
+        if (this.x < 0) this.x = 0;
+        if (this.x + this.w > W) this.x = W - this.w;
+      },
+      draw() {
+        // trail
+        for (let i = 0; i < this.trail.length; i++) {
+          const a = i / this.trail.length * 0.35;
+          ctx.fillStyle = `rgba(150,150,150,${a})`;
+          ctx.fillRect(this.trail[i].x - 2, this.trail[i].y - 2, 4, 4);
+        }
+
+        ctx.save();
+        ctx.translate(this.x + this.w / 2, this.y + this.h / 2);
+        ctx.rotate(this.rotation);
+
+        // shadow/ground under bird
+        ctx.fillStyle = 'rgba(0,0,0,0.12)';
+        ctx.fillRect(-this.w / 2 + 2 * PIX, this.h / 2 - 4 * PIX, this.w - 4 * PIX, 4 * PIX);
+
+        if (this.vy < 0) {
+          ctx.fillStyle = 'rgba(200,200,200,0.7)';
+          ctx.save(); ctx.translate(-this.w / 4, 0); ctx.rotate(this.wingRotation); ctx.fillRect(-2 * PIX, -2 * PIX, 4 * PIX, 8 * PIX); ctx.restore();
+          ctx.save(); ctx.translate(this.w / 4, 0); ctx.rotate(-this.wingRotation); ctx.fillRect(-2 * PIX, -2 * PIX, 4 * PIX, 8 * PIX); ctx.restore();
+        }
+
+        // Efeito de invencibilidade: piscando
+        if (activePowerUps['invincibility']) {
+          const alpha = 0.5 + Math.sin(frames / 3) * 0.5;
+          ctx.globalAlpha = alpha;
+        }
+
+        drawPixelSprite(mouseSprite, -this.w / 2, -this.h / 2, mousePalette, PIX);
+        ctx.globalAlpha = 1;
+        ctx.restore();
+      },
+      jump() {
+        if (!running) return;
+        // tenta despertar audio context se estiver suspenso (alguns navegadores exigem gesto do usuário)
+        if (audioContext && audioContext.state === 'suspended') {
+          audioContext.resume().catch(()=>{});
+        }
+        this.vy = jumpForce;
+        this.vx = (Math.random() - 0.5) * 0.5;
+        createParticles(this.x + this.w / 2, this.y + this.h, 6, '#ffffff');
+        if (sounds.jump) sounds.jump();
+      }
+    };
+
+    // Partículas
+    function createParticles(x, y, count, color) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x: x,
+          y: y,
+          vx: (Math.random() - 0.5) * 4,
+          vy: (Math.random() - 0.5) * 4,
+          life: 20 + Math.random() * 20,
+          color,
+          size: 2 + Math.random() * 3
+        });
+      }
+    }
+
+    function updateParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.08;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        const alpha = Math.max(0, Math.min(1, p.life / 40));
+        ctx.fillStyle = `rgba(${hexToRgb(p.color)}, ${alpha})`;
+        ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+      }
+    }
+
+    function hexToRgb(hex) {
+      // suporta #rrggbb e sem '#'
+      const sanitized = hex.replace('#','');
+      if (sanitized.length === 3) {
+        // expandir shorthand
+        const r = sanitized[0]+sanitized[0];
+        const g = sanitized[1]+sanitized[1];
+        const b = sanitized[2]+sanitized[2];
+        return `${parseInt(r,16)}, ${parseInt(g,16)}, ${parseInt(b,16)}`;
+      }
+      const result = /^([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(sanitized);
+      return result ? `${parseInt(result[1],16)}, ${parseInt(result[2],16)}, ${parseInt(result[3],16)}` : '255, 255, 255';
+    }
+
+    // Obstáculos (sapatos)
+    const shoeTypes = [
+      { color:'#b6572d', sole:'#2b1a12', width:48, height:30 },
+      { color:'#e74c3c', sole:'#34495e', width:52, height:28 },
+      { color:'#8e44ad', sole:'#2c3e50', width:46, height:36 }
+    ];
+
+    function makeShoe(x,y,type=0){
+      const s = shoeTypes[type];
+      return { x, y, w: s.width, h: s.height, type, passed:false, wiggle: Math.random()*Math.PI*2 };
+    }
+
+    function spawnShoe() {
+      if (!running) return;
+      const gapY = Math.floor(70 + Math.random() * (H - 220));
+      const sx = W + 30;
+      let type = (lastObstacleType + 1) % shoeTypes.length;
+      if (Math.random() < 0.3) type = lastObstacleType;
+      lastObstacleType = type;
+      obstacles.push(makeShoe(sx, gapY, type));
+      if (score > 10 && Math.random() < 0.2) {
+        obstacles.push(makeShoe(sx + 80, gapY + 150, (type + 1) % shoeTypes.length));
+      }
+    }
+
+    function drawShoe(ob) {
+      const shoe = shoeTypes[ob.type];
+      const px = Math.round(ob.x);
+      const py = Math.round(ob.y);
+      const wiggleOffset = Math.sin(ob.wiggle) * 2;
+      ob.wiggle += 0.05;
+
+      // sola
+      ctx.fillStyle = shoe.sole;
+      ctx.fillRect(px, py + ob.h - 6, ob.w, 6);
+
+      ctx.fillStyle = shoe.color;
+      ctx.fillRect(px + 6, py + wiggleOffset, ob.w - 12, ob.h - 10);
+      ctx.fillRect(px, py + 6 + wiggleOffset, 12, ob.h - 12);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      if (ob.type === 1) {
+        ctx.fillRect(px + 10, py + 8 + wiggleOffset, ob.w - 20, 4);
+        ctx.fillRect(px + 15, py + 16 + wiggleOffset, ob.w - 30, 3);
+      } else if (ob.type === 2) {
+        ctx.fillRect(px + 20, py + 10 + wiggleOffset, 10, 2);
+        ctx.fillRect(px + 20, py + 16 + wiggleOffset, 10, 2);
+      }
+
+      ctx.strokeStyle = '#15110d';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px + 6, py + wiggleOffset, ob.w - 12, ob.h - 10);
+    }
+
+    // Power-ups
+    const powerUpTypes = [
+      { type: 'invincibility', color: '#ffff00', duration: 300 }, // ~5s
+      { type: 'doubleScore', color: '#00ff00', duration: 600 } // ~10s
+    ];
+
+    function makePowerUp(x, y, typeIndex) {
+      return { x, y, w: 10 * PIX, h: 10 * PIX, type: powerUpTypes[typeIndex], collected: false };
+    }
+
+    function spawnPowerUp() {
+      if (!running || score < 5) return;
+      const py = Math.random() * (H - 100) + 50;
+      const px = W + 20;
+      const typeIndex = Math.floor(Math.random() * powerUpTypes.length);
+      powerUps.push(makePowerUp(px, py, typeIndex));
+    }
+
+    function updatePowerUps() {
+      for (let i = powerUps.length - 1; i >= 0; i--) {
+        const pu = powerUps[i];
+        pu.x -= speed;
+        if (rectsIntersect(mouse.x, mouse.y, mouse.w, mouse.h, pu.x, pu.y, pu.w, pu.h) && !pu.collected) {
+          pu.collected = true;
+          applyPowerUp(pu.type);
+          createParticles(pu.x + pu.w / 2, pu.y + pu.h / 2, 20, pu.type.color);
+          if (sounds.collect) sounds.collect();
+        }
+        if (pu.x + pu.w < -50 || pu.collected) {
+          powerUps.splice(i, 1);
+        }
+      }
+    }
+
+    function drawPowerUps() {
+      for (const pu of powerUps) {
+        if (pu.collected) continue;
+        ctx.fillStyle = pu.type.color;
+        ctx.beginPath();
+        ctx.arc(pu.x + pu.w / 2, pu.y + pu.h / 2, pu.w / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function applyPowerUp(powerUp) {
+      activePowerUps[powerUp.type] = powerUp.duration;
+    }
+
+    // Parallax
+    function initParallax(){
+      parallaxLayers = [];
+      for (let i=0;i<3;i++){
+        const layer = { speed: 0.2 + i*0.3, elements: [] };
+        for (let j=0;j<5 + i*3;j++){
+          layer.elements.push({ x: Math.random() * W * 2, y: 50 + Math.random() * (H - 200), size: 30 + Math.random()*50, type:i });
+        }
+        parallaxLayers.push(layer);
+      }
+    }
+
+    function drawParallax(){
+      const g = ctx.createLinearGradient(0,0,0,H);
+      g.addColorStop(0,'#66d2e8');
+      g.addColorStop(1,'#bfeff6');
+      ctx.fillStyle = g;
+      ctx.fillRect(0,0,W,H);
+
+      for (let i=parallaxLayers.length-1;i>=0;i--){
+        const layer = parallaxLayers[i];
+        for (const element of layer.elements){
+          if (running) element.x -= layer.speed;
+          if (element.x + element.size < 0) {
+            element.x = W + Math.random() * W;
+            element.y = 50 + Math.random() * (H - 200);
+          }
+          ctx.fillStyle = i === 0 ? 'rgba(255,245,214,0.7)' : i === 1 ? 'rgba(150,180,200,0.5)' : 'rgba(100,120,140,0.4)';
+          if (i === 0) {
+            roundRect(ctx, element.x, element.y, element.size, element.size/2, 10, true);
+            roundRect(ctx, element.x - element.size/3, element.y + element.size/4, element.size, element.size/2, 10, true);
+            roundRect(ctx, element.x + element.size/3, element.y + element.size/4, element.size, element.size/2, 10, true);
+          } else if (i === 1) {
+            ctx.beginPath();
+            ctx.moveTo(element.x, element.y + element.size);
+            ctx.lineTo(element.x + element.size/2, element.y);
+            ctx.lineTo(element.x + element.size, element.y + element.size);
+            ctx.closePath();
+            ctx.fill();
+          } else {
+            ctx.fillRect(element.x, element.y, element.size, element.size);
+            ctx.fillStyle = 'rgba(255,255,100,0.6)';
+            for (let wx=0; wx<3; wx++) {
+              for (let wy=0; wy<4; wy++) {
+                if (Math.random() > 0.3) {
+                  ctx.fillRect(element.x + 5 + wx * (element.size/3 - 5), element.y + 5 + wy * (element.size/4 - 5), 5, 8);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    function roundRect(ctx,x,y,w,h,r,fill){
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+      if (fill) ctx.fill();
+    }
+
+    function applyScreenShake(){
+      if (shakeTime > 0) {
+        ctx.translate((Math.random()-0.5)*shakeTime*2, (Math.random()-0.5)*shakeTime*2);
+        shakeTime--;
+      }
+    }
+
+    function isSlowMotion(){ return slowMotion > 0; }
+
+    function reset(){
+      frames = 0;
+      obstacles = [];
+      powerUps = [];
+      particles = [];
+      score = 0;
+      speed = 2.8;
+      running = true;
+      gameOverTriggered = false;
+      gameStarted = true;
+      activePowerUps = {};
+      mouse.y = H/2 - 40;
+      mouse.vy = 0;
+      mouse.vx = 0;
+      mouse.trail = [];
+      scoreEl.textContent = '0';
+      highScoreEl.textContent = highScore;
+      startScreen.classList.remove('active');
+      gameOverScreen.classList.remove('active');
+    }
+
+    function gameOver(){
+      if (gameOverTriggered) return;
+      gameOverTriggered = true;
+      running = false;
+
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('flappyMouseHighScore', highScore);
+      }
+
+      shakeTime = 20;
+      createParticles(mouse.x + mouse.w/2, mouse.y + mouse.h/2, 30, '#9aa0a4');
+
+      finalScoreEl.textContent = score;
+      finalHighScoreEl.textContent = highScore;
+
+      // mostrar tela de game over com pequena demora para efeitos
+      setTimeout(()=> gameOverScreen.classList.add('active'), 600);
+
+      if (sounds.gameOver) sounds.gameOver();
+    }
+
+    function update(){
+      // se não estiver rodando, ainda queremos animar partículas e parallax leves? aqui mantemos atualização básica das partículas para efeitos visuais
+      if (!running && !gameStarted) return;
+      const updateFrames = isSlowMotion() ? 0.5 : 1;
+      frames += updateFrames;
+
+      // atualizar mouse mesmo que slow motion reduza velocidade frametime
+      mouse.update();
+
+      // spawn com base em frames e spawnRate
+      if (running && Math.floor(frames) % Math.max(55, spawnRate - Math.floor(score / 10)) === 0) {
+        spawnShoe();
+      }
+
+      // Spawn power-ups
+      if (running && Math.floor(frames) % 150 === 0 && Math.random() < 0.15) {
+        spawnPowerUp();
+      }
+
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const ob = obstacles[i];
+        ob.x -= speed * updateFrames;
+
+        // colisão
+        if (running && rectsIntersect(mouse.x, mouse.y, mouse.w, mouse.h, ob.x, ob.y, ob.w, ob.h) && !activePowerUps['invincibility']) {
+          createParticles(mouse.x + mouse.w/2, mouse.y + mouse.h/2, 15, '#ff0000');
+          shakeTime = 15;
+          slowMotion = 30;
+          if (sounds.hit) sounds.hit();
+          gameOver();
+          return; // interrompe ciclo após colisão
+        }
+
+        if (!ob.passed && ob.x + ob.w < mouse.x) {
+          ob.passed = true;
+          let points = 1;
+          if (activePowerUps['doubleScore']) points *= 2;
+          score += points;
+          scoreEl.textContent = score;
+          createParticles(ob.x + ob.w/2, ob.y + ob.h/2, 8, '#ffff00');
+          if (sounds.score) sounds.score();
+          if (score % 5 === 0) slowMotion = 10;
+        }
+
+        if (ob.x + ob.w < -50) obstacles.splice(i,1);
+      }
+
+      // Atualizar power-ups ativos
+      for (let key in activePowerUps) {
+        activePowerUps[key]--;
+        if (activePowerUps[key] <= 0) delete activePowerUps[key];
+      }
+
+      // atualizar power-ups
+      updatePowerUps();
+
+      // aumentar dificuldade gradualmente
+      if (Math.floor(frames) % 300 === 0) {
+        speed += 0.15;
+        if (spawnRate > 40) spawnRate -= 2;
+      }
+
+      updateParticles();
+      if (slowMotion > 0) slowMotion--;
+    }
+
+    function rectsIntersect(ax,ay,aw,ah,bx,by,bw,bh){
+      return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+    }
+
+    function render(){
+      ctx.clearRect(0,0,W,H);
+      ctx.save();
+
+      applyScreenShake();
+      drawParallax();
+
+      // chão
+      ctx.fillStyle = '#2f9b49';
+      ctx.fillRect(0, H - 48, W, 48);
+
+      for (let x = 0; x < W; x += 32) {
+        ctx.fillStyle = 'rgba(0,0,0,0.08)';
+        ctx.fillRect(x, H - 52, 22, 6);
+      }
+
+      for (const ob of obstacles) drawShoe(ob);
+      drawPowerUps();
+      drawParticles();
+      mouse.draw();
+
+      ctx.restore();
+    }
+
+    function loop(){
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    function setupControls(){
+      // keydown -> aceita "Space" ou "Spacebar" para compatibilidade
+      window.addEventListener('keydown', e => {
+        if (e.code === 'Space' || e.key === ' ') {
+          e.preventDefault();
+          if (!gameStarted) startBtnScreen.click();
+          else if (!running) restartBtn.click();
+          else mouse.jump();
+        }
+      });
+
+      canvas.addEventListener('mousedown', e => {
+        if (!gameStarted) startBtnScreen.click();
+        else if (!running) restartBtn.click();
+        else mouse.jump();
+      });
+
+      canvas.addEventListener('touchstart', e => {
+        e.preventDefault();
+        if (!gameStarted) startBtnScreen.click();
+        else if (!running) restartBtn.click();
+        else mouse.jump();
+      }, { passive: false });
+
+      startBtnScreen.addEventListener('click', () => {
+        if (gameStarted) return;
+        initAudio();
+        gameStarted = true;
+        startScreen.classList.remove('active');
+        reset();
+      });
+
+      restartBtn.addEventListener('click', () => {
+        if (audioContext && audioContext.state === 'suspended') {
+          audioContext.resume().catch(()=>{});
+        }
+        reset();
+      });
+    }
+
+    function init(){
+      initParallax();
+      setupControls();
+      highScoreEl.textContent = highScore;
+      startScreen.classList.add('active');
+      loop();
+    }
+
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>
